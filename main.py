@@ -5,6 +5,7 @@ import pygame
 from pygame.math import Vector2
 
 pygame.init()
+pygame.mixer.init()
 
 SCREEN_WIDTH, SCREEN_HEIGHT = 1000, 700
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -17,6 +18,44 @@ font_small = pygame.font.SysFont("arial", 28, bold=True)
 font_hud = pygame.font.SysFont("arial", 32, bold=True)
 font_chat_bold = pygame.font.SysFont("arial", 26, bold=True)
 font_chat = pygame.font.SysFont("arial", 22, bold=False)
+
+try:
+    full_splash = pygame.mixer.Sound("assets/splash.ogg")
+    raw_bytes = full_splash.get_raw()
+    init_res = pygame.mixer.get_init()
+    if init_res:
+        freq, fmt, channels = init_res
+        bytes_per_sample = abs(fmt) // 8
+        bytes_per_sec = freq * channels * bytes_per_sample
+        bytes_to_cut = int(bytes_per_sec * 0.4)
+        if len(raw_bytes) > bytes_to_cut:
+            splash_sound = pygame.mixer.Sound(buffer=raw_bytes[bytes_to_cut:])
+        else:
+            splash_sound = full_splash
+    else:
+        splash_sound = full_splash
+except pygame.error:
+    splash_sound = None
+
+try:
+    crunch_sound = pygame.mixer.Sound("assets/crunch.ogg")
+except pygame.error:
+    crunch_sound = None
+
+try:
+    boss_sound = pygame.mixer.Sound("assets/boss.ogg")
+except pygame.error:
+    boss_sound = None
+
+try:
+    peep_sound = pygame.mixer.Sound("assets/peep.ogg")
+except pygame.error:
+    peep_sound = None
+
+try:
+    hurt_sound = pygame.mixer.Sound("assets/hurt.ogg")
+except pygame.error:
+    hurt_sound = None
 
 def load_transparent_image(path, scale_factor=1.0):
     image = pygame.image.load(path).convert()
@@ -42,6 +81,11 @@ trap_img = load_transparent_image("assets/trap.png", 0.5)
 poobert_img = load_transparent_image("assets/poobert.png", 0.6)
 splash_img = load_transparent_image("assets/splash.png", 0.5)
 
+try:
+    crumb_img = load_transparent_image("assets/crumb.png", 0.4)
+except pygame.error:
+    crumb_img = None
+
 carriage_raw = pygame.image.load("assets/ratticus_carriage.png").convert()
 carriage_raw.set_colorkey((255, 255, 255))
 carriage_img = pygame.transform.scale(carriage_raw, (160, 110))
@@ -49,6 +93,13 @@ carriage_img = pygame.transform.scale(carriage_raw, (160, 110))
 ratticus_raw = pygame.image.load("assets/ratticus.png").convert()
 ratticus_raw.set_colorkey((255, 255, 255))
 ratticus_boss_img = pygame.transform.scale(ratticus_raw, (110, 110))
+
+try:
+    ratticus_dead_raw = pygame.image.load("assets/ratticusdead.png").convert()
+    ratticus_dead_raw.set_colorkey((255, 255, 255))
+    ratticus_dead_img = pygame.transform.scale(ratticus_dead_raw, (110, 110))
+except pygame.error:
+    ratticus_dead_img = ratticus_boss_img
 
 try:
     ratticus2_raw = pygame.image.load("assets/ratticus2.png").convert()
@@ -68,6 +119,25 @@ for r in range(-2, 2):
 
 occupied_crops = set()
 
+class CrumbFX:
+    def __init__(self, pos):
+        self.particles = []
+        for _ in range(5):
+            vel = Vector2(random.uniform(-2.5, 2.5), random.uniform(-2.5, 2.5))
+            self.particles.append({'pos': Vector2(pos), 'vel': vel, 'timer': random.randint(300, 500)})
+
+    def update(self, dt):
+        for p in self.particles:
+            p['pos'] += p['vel']
+            p['timer'] -= dt
+        self.particles = [p for p in self.particles if p['timer'] > 0]
+
+    def draw(self, surface):
+        if crumb_img:
+            for p in self.particles:
+                rect = crumb_img.get_rect(center=(int(p['pos'].x), int(p['pos'].y)))
+                surface.blit(crumb_img, rect)
+
 class MiniRatticus:
     def __init__(self, target_crop, current_survival_time):
         self.pos = Vector2(SCREEN_WIDTH + 20, random.randint(150, 550))
@@ -85,7 +155,7 @@ class MiniRatticus:
     def get_rect(self):
         return rat_img.get_rect(center=(int(self.pos.x), int(self.pos.y)))
 
-    def update(self, dt):
+    def update(self, dt, crumbs_list):
         if self.state == "APPROACHING":
             direction = (self.target - self.pos)
             if direction.length() <= self.speed:
@@ -98,7 +168,10 @@ class MiniRatticus:
             self.eat_timer -= dt
             if self.eat_timer <= 0:
                 if self.target in CROPS_GRID:
+                    crumbs_list.append(CrumbFX(self.target))
                     CROPS_GRID.remove(self.target)
+                    if crunch_sound:
+                        crunch_sound.play()
                 if self.target_key in occupied_crops:
                     occupied_crops.remove(self.target_key)
                 self.target = TOP_RIGHT_EXIT
@@ -165,16 +238,20 @@ class PoobertTurret:
         surface.blit(rotated_poobert, rect)
 
 def reset_game():
-    global CROPS_GRID, occupied_crops, rats, traps, splashes, army_rats
+    global CROPS_GRID, occupied_crops, rats, traps, splashes, crumbs, army_rats
     global spawn_timer, survival_time, win, game_state, fire_cooldown
     global intro_x, intro_transform, intro_transform_timer, playing_intro_timer
     global boss_pos, boss_retreating, boss_hp, boss_max_hp, boss_eat_timer
+
+    if boss_sound:
+        boss_sound.stop()
 
     CROPS_GRID = [Vector2(FARM_CENTER_X + c * 45, FARM_CENTER_Y + r * 45) for r in range(-2, 2) for c in range(-1, 2)]
     occupied_crops = set()
     rats = []
     traps = []
     splashes = []
+    crumbs = []
     army_rats = []
     spawn_timer = 0
     survival_time = 0
@@ -195,6 +272,7 @@ turret = PoobertTurret(TURRET_POS)
 rats = []
 traps = []
 splashes = []
+crumbs = []
 army_rats = []
 spawn_timer = 0
 survival_time = 0
@@ -244,15 +322,21 @@ while running:
                         playing_intro_timer = 3500
                         boss_retreating = True
                         boss_pos = Vector2(intro_target_x, intro_y)
+                        if peep_sound:
+                            peep_sound.play()
                     elif opt2_rect.collidepoint(mouse_pos):
                         win = True
                         game_state = "VICTORY"
                 elif game_state == "BOSS_DIALOGUE":
                     game_state = "BOSS_MARCH"
+                    if boss_sound:
+                        boss_sound.play(loops=-1)
                 elif game_state in ("PLAYING", "BOSS_MARCH"):
                     if fire_cooldown <= 0:
                         traps.append(MouseTrap(turret.pos, mouse_pos))
                         fire_cooldown = 1000
+                        if splash_sound:
+                            splash_sound.play()
 
     if game_state == "INTRO_SLIDE":
         intro_x -= intro_speed
@@ -267,6 +351,8 @@ while running:
             intro_transform = True
             game_state = "INTRO_DIALOGUE"
             boss_pos = Vector2(intro_target_x, intro_y)
+            if peep_sound:
+                peep_sound.play()
 
     elif game_state == "PLAYING":
         spawn_timer += dt
@@ -274,9 +360,11 @@ while running:
 
         if survival_time >= 60000:
             game_state = "BOSS_DIALOGUE"
+            if peep_sound:
+                peep_sound.play()
             for rat in rats:
                 rat.state = "FLEEING"
-                rat.target = Vector2(SCREEN_WIDTH + 50, rat.pos.y) # Progressively run to right wall
+                rat.target = Vector2(SCREEN_WIDTH + 50, rat.pos.y)
             army_rats = [Vector2(SCREEN_WIDTH - 60, 100 + i * 55) for i in range(10)]
 
         if playing_intro_timer > 0:
@@ -305,7 +393,7 @@ while running:
             spawn_timer = 0
 
         for rat in rats[:]:
-            still_active = rat.update(dt)
+            still_active = rat.update(dt, crumbs)
             if not still_active:
                 rats.remove(rat)
 
@@ -333,13 +421,17 @@ while running:
             splash.update(dt)
             if splash.timer <= 0:
                 splashes.remove(splash)
-                
+
+        for crumb_fx in crumbs[:]:
+            crumb_fx.update(dt)
+            if not crumb_fx.particles:
+                crumbs.remove(crumb_fx)
+
     elif game_state == "BOSS_MARCH":
         turret.update(mouse_pos)
         
-        # Keep updating fleeing rats so they clear the screen
         for rat in rats[:]:
-            still_active = rat.update(dt)
+            still_active = rat.update(dt, crumbs)
             if not still_active:
                 rats.remove(rat)
         
@@ -352,14 +444,25 @@ while running:
                 boss_eat_timer -= dt
                 if boss_eat_timer <= 0:
                     removed_crop = CROPS_GRID.pop(0)
+                    crumbs.append(CrumbFX(removed_crop))
                     key = (removed_crop.x, removed_crop.y)
                     if key in occupied_crops:
                         occupied_crops.remove(key)
-                    boss_eat_timer = 1000 # 1 second per crop
+                    boss_eat_timer = 1000
+                    if crunch_sound:
+                        crunch_sound.play()
             else:
                 boss_pos += direction.normalize() * 1.0
         else:
-            game_state = "GAME_OVER"
+            boss_target = TURRET_POS
+            direction = (boss_target - boss_pos)
+            
+            if direction.length() <= 1.5:
+                game_state = "GAME_OVER"
+                if boss_sound:
+                    boss_sound.stop()
+            else:
+                boss_pos += direction.normalize() * 1.0
 
         boss_rect = ratticus_boss_img.get_rect(center=(int(boss_pos.x), int(boss_pos.y)))
 
@@ -371,7 +474,6 @@ while running:
 
             trap_rect = trap.get_rect()
             
-            # Hit rats that are running away
             hit = False
             for rat in rats[:]:
                 rat_rect = rat.get_rect()
@@ -385,22 +487,29 @@ while running:
                 traps.remove(trap)
                 continue
 
-            # Hit Boss
             if trap_rect.colliderect(boss_rect):
-                splashes.append(SplashFX(boss_pos))
                 boss_hp -= 1
                 traps.remove(trap)
+                if hurt_sound:
+                    hurt_sound.play()
                 if boss_hp <= 0:
                     game_state = "VICTORY"
+                    if boss_sound:
+                        boss_sound.stop()
 
         for splash in splashes[:]:
             splash.update(dt)
             if splash.timer <= 0:
                 splashes.remove(splash)
 
+        for crumb_fx in crumbs[:]:
+            crumb_fx.update(dt)
+            if not crumb_fx.particles:
+                crumbs.remove(crumb_fx)
+
     display_surface.blit(background_img, (0, 0))
 
-    if game_state in ("PLAYING", "GAME_OVER", "BOSS_DIALOGUE", "BOSS_MARCH"):
+    if game_state in ("PLAYING", "GAME_OVER", "BOSS_DIALOGUE", "BOSS_MARCH", "VICTORY"):
         for crop_pos in CROPS_GRID:
             crop_rect = crop_img.get_rect(center=(int(crop_pos.x), int(crop_pos.y)))
             display_surface.blit(crop_img, crop_rect)
@@ -416,12 +525,22 @@ while running:
         for splash in splashes:
             splash.draw(display_surface)
 
-    if game_state in ("BOSS_DIALOGUE", "BOSS_MARCH"):
+        for crumb_fx in crumbs:
+            crumb_fx.draw(display_surface)
+
+    if game_state in ("BOSS_DIALOGUE", "BOSS_MARCH", "VICTORY"):
         for army_pos in army_rats:
             a_rect = rat_img.get_rect(center=(int(army_pos.x), int(army_pos.y)))
             display_surface.blit(rat_img, a_rect)
 
-    if intro_transform and (game_state not in ("PLAYING", "INTRO_SLIDE", "INTRO_TRANSFORM", "INTRO_DIALOGUE") or playing_intro_timer > 0):
+    if game_state == "VICTORY":
+        if boss_hp <= 0:
+            dead_rect = ratticus_dead_img.get_rect(center=(int(boss_pos.x), int(boss_pos.y)))
+            display_surface.blit(ratticus_dead_img, dead_rect)
+        elif intro_transform:
+            b_rect = ratticus_boss_img.get_rect(center=(int(boss_pos.x), int(boss_pos.y)))
+            display_surface.blit(ratticus_boss_img, b_rect)
+    elif intro_transform and (game_state not in ("PLAYING", "INTRO_SLIDE", "INTRO_TRANSFORM", "INTRO_DIALOGUE") or playing_intro_timer > 0):
         b_rect = ratticus_boss_img.get_rect(center=(int(boss_pos.x), int(boss_pos.y)))
         display_surface.blit(ratticus_boss_img, b_rect)
 
@@ -568,27 +687,23 @@ while running:
         display_surface.blit(text_restart, restart_rect)
 
     elif game_state == "VICTORY":
-        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 140))
-        display_surface.blit(overlay, (0, 0))
-
         if boss_hp <= 0:
             title_str = "VICTORY!"
             sub_str = "You kept your island away from Ratticus's hands!"
         else:
             title_str = "RENT PAID"
-            sub_str = "You avoided a rat infestation by settling your accounts!"
+            sub_str = "You kept your island by settling your accounts!"
 
         text_title = font_large.render(title_str, True, (50, 220, 50))
-        title_rect = text_title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20))
+        title_rect = text_title.get_rect(center=(SCREEN_WIDTH // 2, 120))
         display_surface.blit(text_title, title_rect)
 
         text_sub = font_small.render(sub_str, True, (240, 240, 240))
-        sub_rect = text_sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40))
+        sub_rect = text_sub.get_rect(center=(SCREEN_WIDTH // 2, 180))
         display_surface.blit(text_sub, sub_rect)
 
         text_restart = font_chat.render("Press 'R' to restart", True, (200, 200, 200))
-        restart_rect = text_restart.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 100))
+        restart_rect = text_restart.get_rect(center=(SCREEN_WIDTH // 2, 230))
         display_surface.blit(text_restart, restart_rect)
 
     screen.fill((0, 0, 0))
